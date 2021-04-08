@@ -3,6 +3,10 @@ name = "gothook"
 version = "0.1.0"
 authors = ["s1341 <github@shmarya.net>"]
 edition = "2018"
+license-file = "LICENSE"
+keywords = [ "hook", "got", "plt", "elf" ]
+repository = "https://github.com/s1341"
+description = "A library implementing GOT/PLT based hooking"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
