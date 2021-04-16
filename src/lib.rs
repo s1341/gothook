@@ -1,6 +1,6 @@
 use goblin::{
     container::{Container, Ctx},
-    elf::{dynamic::{Dynamic, DT_RELA}, sym::Symtab, Elf, ProgramHeader, RelocSection},
+    elf::{dynamic::{Dynamic, DT_RELA, DT_LOOS}, sym::Symtab, Elf, ProgramHeader, RelocSection},
     strtab::Strtab,
 };
 use libloading::Library;
@@ -58,11 +58,82 @@ impl<'a> GotHookLibrary<'a> {
             Dynamic::parse(&file_in_memory, &elf.program_headers, ctx)
                 .expect("parse dynamic section");
 
+
+        //let mut android_relr_offset = 0;
+        //let mut android_relr_size = 0;
+
+        //for entry in elf.dynamic.dyns {
+            //match entry.tag {
+                //// DT_ANDROID_REL
+                //DT_LOOS + 2 => {
+
+                //},
+                //// DT_ANDROID_RELSZ
+                //DT_LOOS + 3 => {
+
+                //},
+                //// DT_ANDROID_RELA
+                //DT_LOOS + 4 => {
+
+                //},
+                //// DT_ANDROID_RELASZ
+                //DT_LOOS + 5 => {
+
+                //},
+                //// DT_ANDROID_RELR
+                //0x6fffe000 | 36 => {
+                    //android_rel_offset = entry.val;
+                //},
+                //// DT_ANDROID_RELRSZ
+                //0x6fffe001 | 35 => {
+                    //android_relr_size = entry.val;
+                //},
+                //// DT_ANDROID_RELRENT
+                //0x6fffe003 | 37 => {
+                    //android_relr_entry_size = entry.val;
+                //},
+                //// DT_ANDROID_RELRCOUNT
+                //0x6fffe005 => {
+
+                //},
+                //_ => (),
+            //}
+        //}
+
+        //if android_relr_offset != 0 {
+            //let mut relocations: Vec<usize> = vec!();
+            //let qwords = std::slice::from_raw_parts((start + android_relr_offset) as usize as *mut usize, android_relr_size / android_relr_entry_size);
+            //let mut index = 0;
+            //while index < qwords.len() {
+                //let base_address = qwords[index];
+                //assert!(base_address % 2 == 0);
+
+                //index += 1;
+                //while qwords[index] & 1 == 1 {
+                    //let bitmap = qwords[index];
+                    //index += 1;
+
+                    //for bitindex in 1..63 {
+                        //if (bitmap >> bitindex) & 1 == 1 {
+
+                        //}
+                    //}
+                //}
+
+
+            //}
+
+        //}
+
         let info = &elf.dynamic.as_ref().unwrap().info;
 
         // second word of hash
         let chain_count = unsafe {
-            std::slice::from_raw_parts((start + info.hash.unwrap() as usize + 4) as *mut u32, 1)[0]
+            if let Some(offset) = info.hash {
+                std::slice::from_raw_parts((start + offset as usize + 4) as *mut u32, 1)[0]
+            } else {
+                (info.pltrelsz / info.syment) as u32
+            }
         };
 
         elf.dynsyms = Symtab::parse(
@@ -116,7 +187,11 @@ impl<'a> GotHookLibrary<'a> {
     }
 
     /// Hook the function specified by name
-    pub fn hook_function(&self, name: &str, newfunc: *const c_void) -> bool {
+    ///
+    /// #Safety:
+    /// This function is inherently unsafe as it modifies the got.plt of the target library,
+    /// dereferncing raw pointers as necessary.
+    pub unsafe fn hook_function(&self, name: &str, newfunc: *const c_void) -> bool {
         let mut symindex: isize = -1;
         for (i, symbol) in self.elf.dynsyms.iter().enumerate() {
             if name == self.elf.dynstrtab.get(symbol.st_name).unwrap().unwrap() {
@@ -137,36 +212,38 @@ impl<'a> GotHookLibrary<'a> {
                 break;
             }
         }
-
-        unsafe {
-            let address = self.start + offset as usize;
-            let value = std::ptr::read(address as *const *const c_void);
-            println!(
-                "found {:?} at address {:x}, with value {:x}, replacing...",
-                name, address, value as usize
-            );
-            mprotect(
-                ((address / 0x1000) * 0x1000) as *mut c_void,
-                0x1000,
-                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-            )
-            .expect("Failed to mprotect to read/write");
-            std::ptr::replace(address as *mut *const c_void, newfunc);
-            mprotect(
-                ((address / 0x1000) * 0x1000) as *mut c_void,
-                0x1000,
-                ProtFlags::PROT_READ,
-            )
-            .expect("Failed to mprotect back to read-only");
-
-            let value = std::ptr::read(address as *const *const c_void);
-            println!(
-                "verified value set to {:x}, expected {:x}",
-                value as usize, newfunc as usize
-            );
-
-            value == newfunc
+        if offset == -1 {
+            println!("failed to find relocation for {:?}", name);
+            return false;
         }
+
+        let address = self.start + offset as usize;
+        let value = std::ptr::read(address as *const *const c_void);
+        println!(
+            "found {:?} at address {:x}, with value {:x}, replacing...",
+            name, address, value as usize
+        );
+        mprotect(
+            ((address / 0x1000) * 0x1000) as *mut c_void,
+            0x1000,
+            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+        )
+        .expect("Failed to mprotect to read/write");
+        std::ptr::replace(address as *mut *const c_void, newfunc);
+        mprotect(
+            ((address / 0x1000) * 0x1000) as *mut c_void,
+            0x1000,
+            ProtFlags::PROT_READ,
+        )
+        .expect("Failed to mprotect back to read-only");
+
+        let value = std::ptr::read(address as *const *const c_void);
+        println!(
+            "verified value set to {:x}, expected {:x}",
+            value as usize, newfunc as usize
+        );
+
+        value == newfunc
     }
 }
 
